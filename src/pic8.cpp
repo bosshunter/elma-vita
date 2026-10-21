@@ -312,6 +312,10 @@ void pic8::fillbox( int x1, int y1, int x2, int y2, unsigned char szin ) {
 
 
 void pic8::vizszegmens_look( int x, int y, int size, unsigned char* lookup ) {
+	if( Port_gjrajz ) { // (port) the timer, drawn by the GPU
+		port_gj_look( x, y, size, 1, lookup );
+		return;
+	}
 	#ifdef PIC8TEST
 		if( x < 0 || y < 0 || x+size-1 >= xsize || y >= ysize )
 			hiba( "pic8::vizszegmens-ben x, y kilog!" );
@@ -324,6 +328,10 @@ void pic8::vizszegmens_look( int x, int y, int size, unsigned char* lookup ) {
 }
 
 void pic8::fuggszegmens_look( int x, int y, int size, unsigned char* lookup ) {
+	if( Port_gjrajz ) { // (port) the timer, drawn by the GPU
+		port_gj_look( x, y, 1, size, lookup );
+		return;
+	}
 	#ifdef PIC8TEST
 		if( x < 0 || y < 0 || x >= xsize || y+size-1 >= ysize )
 			hiba( "pic8::vizszegmens-ben x, y kilog!" );
@@ -514,37 +522,51 @@ void pic8::pcxbeolvas( char* nev, FILE* h ) {
 	//if( !lefoglal( desc.Xmax-desc.Xmin+1, desc.Ymax-desc.Ymin+1 ) ) {
 	if( !lefoglal( desc.Xmax-desc.Xmin+1, desc.Ymax-desc.Ymin+1 ) )
 		hiba( "pcx !lefoglal!" );
+	// (port) The pixels used to be read with one fread per byte, which made
+	// loading an LGR file (dozens of pictures) take a couple of seconds on the
+	// Vita. Now they are read in blocks; the bytes read past the end of the
+	// picture are given back (fseek), as the caller reads on from there:
+	static unsigned char Puffer[16384];
+	int pufhossz = 0, pufpos = 0;
+	#define PCXBYTE( cel ) { \
+		if( pufpos >= pufhossz ) { \
+			pufhossz = int(fread( Puffer, 1, sizeof( Puffer ), h )); \
+			pufpos = 0; \
+			if( pufhossz <= 0 ) \
+				hiba( "\nNem tud olvasni PCX-ben", nev ); \
+		} \
+		cel = Puffer[pufpos++]; }
 	for( int y = 0; y < ysize; y++ ) {
 		// Egy sor beolvasasa:
 		short nnn = 0, ccc, iii;
+		unsigned char* sor = sormuttomb[y];
 
 		do {
 			unsigned char szin;
-			long l = fread( &szin, 1, 1, h );
+			PCXBYTE( szin );
 			ccc = szin;
-			if( l != 1 )
-				hiba( "\nNem tud olvasni PCX-ben", nev );
 
 			if( (ccc & 0xc0) == 0xc0 ) {
 				iii = ccc & (short)0x3f;
-				l = fread( &szin, 1, 1, h );
+				PCXBYTE( szin );
 				ccc = szin;
-				if( l != 1 )
-					hiba( "\nNem tud olvasni PCX-ben", nev );
 
 				while( iii-- ) {
 					if( nnn < xsize )
-						ppixel( nnn, y, (unsigned char)ccc );
+						sor[nnn] = (unsigned char)ccc;
 					nnn++;
 				}
 			}
 			else {
 				if( nnn < xsize )
-					ppixel( nnn, y, (unsigned char)ccc );
+					sor[nnn] = (unsigned char)ccc;
 				nnn++;
 			}
 		} while( nnn < desc.BytesPerScanLine );
 	}
+	#undef PCXBYTE
+	if( pufpos < pufhossz )
+		fseek( h, -(long)(pufhossz-pufpos), SEEK_CUR ); // give back what was read ahead
 
 	// success az elejen mar 1-re van allitva!
 	if( zarando )

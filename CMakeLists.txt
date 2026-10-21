@@ -18,7 +18,7 @@ include("$ENV{VITASDK}/share/vita.cmake" REQUIRED)
 
 set(VITA_APP_NAME "Elasto Mania")
 set(VITA_TITLEID  "ELMA00001")
-set(VITA_VERSION  "01.00")
+set(VITA_VERSION  "01.10")
 # Where the game looks for its data files on the Vita:
 set(ELMA_DATA_DIR "ux0:data/elma")
 
@@ -39,6 +39,7 @@ endforeach()
 add_executable(elma
   ${ELMA_SOURCES}
   platform/vita_platform.cpp
+  platform/vita_gpu.cpp
   platform/vita_hhigh.cpp
   compat/compat.c
 )

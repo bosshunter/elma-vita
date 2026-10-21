@@ -160,6 +160,14 @@ void teljes( void ) {
 
 	seteditorpal();
 
+	// (port) Read the default LGR file now, while the title picture is on the
+	// screen, instead of when the first level starts (that felt like the game
+	// froze for a couple of seconds). Most levels use it:
+	if( access( "lgr\\default.lgr", 0 ) == 0 ) {
+		char lgrnev[10] = "DEFAULT";
+		loadlgrfile( lgrnev );
+	}
+
 	// Eger:
 	int mmx = 355;
 	int mmy = 265;

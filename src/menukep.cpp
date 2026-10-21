@@ -205,7 +205,10 @@ static int Kezdoanimjon = 1;
 // (port) Tiles the menu background over the whole 960x544 menu screen. The
 // pattern is anchored so that the centred 640x480 part looks exactly like the
 // original screen:
+static int Hatterverzio = 0; // (port) changes whenever Menusima / Menugolyo are redrawn (GPU)
+
 static void hatterrajzol( void ) {
+	Hatterverzio++;
 	int tx = Kisnevsima->getxsize();
 	int ty = Kisnevsima->getysize();
 	// The original rows started at y = -47 (row 0), going down by ty:
@@ -303,6 +306,35 @@ void szoveglista::kirajzol( int nemkellgolyo,
 		dt = 100.0;
 
 	leptetgolyo( dt ); // 12.0 volt regebben
+
+	if( port_gpu() ) {
+		// (port) The GPU draws the frame: the two pictures are uploaded when
+		// they change, the balls are discs showing the same place of them.
+		port_gm_hatter( Menusima, Menugolyo, Hatterverzio );
+		port_korong k[64];
+		int db = 0;
+		for( int i = 0; i < Ngolyok && db+3 <= 64; i++ ) {
+			if( nemkellgolyo || !State->animatedmenus )
+				break;
+			vekt2 r = Golyok[i].rmostani;
+			double sug = Golyok[i].sug;
+			vekt2 diff( sug*0.5*cos( Golyok[i].alfamostani ),
+						sug*0.5*sin( Golyok[i].alfamostani ) );
+			vekt2 r1 = r + diff, r2 = r - diff;
+			k[db].x = (float)r.x;  k[db].y = (float)r.y;  k[db].r = (float)sug;      k[db].golyobol = 1; db++;
+			k[db].x = (float)r1.x; k[db].y = (float)r1.y; k[db].r = (float)(sug*0.25); k[db].golyobol = 0; db++;
+			k[db].x = (float)r2.x; k[db].y = (float)r2.y; k[db].r = (float)(sug*0.25); k[db].golyobol = 0; db++;
+		}
+		pic8* sisak = NULL;
+		if( !nemkellgolyo ) {
+			if( State->animatedmenus )
+				sisak = Psisak->getframe( ujido*0.0024 );
+			else
+				sisak = Psisak->getframebyindex( 25 );
+		}
+		port_gm_rajz( db, k, sisak, sisakx-20, sisaky-7 );
+		return;
+	}
 
 	blt8( Tmpbuffer, Menusima );
 

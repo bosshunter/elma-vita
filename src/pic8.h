@@ -37,6 +37,8 @@ private:
 	unsigned short spritehossz;
 public:
 	int success;
+	int vansprite( void ) { return sprite != 0; } // (port) for the GPU drawing
+	const unsigned char* getsprite( void ) { return sprite; } // (port)
 	pic8( int xsize, int ysize );
 	// Mar meglevo tombre epiti ra pic8-at, destruktor nem torli:
 	pic8( int xsize, int ysize, unsigned char** ppc );

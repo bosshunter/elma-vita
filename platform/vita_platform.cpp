@@ -96,12 +96,24 @@ static unsigned char* Buff[2] = { NULL, NULL }; // 960x544 8-bit buffers
 static int Elso = 0;                              // index of the front buffer
 static unsigned char* Sormut[PORT_FIZY];          // row pointers handed out
 static int Bufflocked = 0;
-static vita2d_texture* Tex = NULL;
+// (port) The screen textures, a ring: the CPU writes the next one while the
+// GPU may still be drawing the previous ones, so it never has to wait.
+#define TEXSZAM (4)
+static vita2d_texture* Texek[TEXSZAM] = { NULL, NULL, NULL, NULL };
+static int Texmost = 0;
+#define Tex (Texek[Texmost])
 static unsigned int Paletta[256];                 // current palette (ABGR)
 static int Vitainit = 0;
 // Front buffer or palette changed but not shown yet. Shown from mv_check, so
 // many small front-buffer updates (level editor) cost one screen refresh:
 static int Piszkos = 0;
+static int Palpiszkos = 0; // (port) only the palette changed
+// (port) What is on the screen: 0 the CPU buffer, 1 / 2 a GPU gameplay / menu frame
+int Port_kepforras = 0;
+
+const unsigned int* port_paletta( void ) {
+	return Paletta;
+}
 
 static void ddinit( void ) {
 	for( int i = 0; i < 2; i++ ) {
@@ -110,23 +122,27 @@ static void ddinit( void ) {
 			uzenet( "memory ddinit!" );
 		memset( Buff[i], 0, PORT_FIZX*PORT_FIZY );
 	}
-	Tex = vita2d_create_empty_texture_format( PORT_FIZX, PORT_FIZY,
-											  SCE_GXM_TEXTURE_FORMAT_P8_ABGR );
-	if( !Tex )
-		uzenet( "Could not create the screen texture!" );
-	vita2d_texture_set_filters( Tex, SCE_GXM_TEXTURE_FILTER_POINT,
-								SCE_GXM_TEXTURE_FILTER_POINT );
+	for( int i = 0; i < TEXSZAM; i++ ) {
+		Texek[i] = vita2d_create_empty_texture_format( PORT_FIZX, PORT_FIZY,
+													   SCE_GXM_TEXTURE_FORMAT_P8_ABGR );
+		if( !Texek[i] )
+			uzenet( "Could not create the screen texture!" );
+		vita2d_texture_set_filters( Texek[i], SCE_GXM_TEXTURE_FILTER_POINT,
+									SCE_GXM_TEXTURE_FILTER_POINT );
+	}
 	for( int i = 0; i < 256; i++ )
 		Paletta[i] = RGBA8( i, i, i, 255 );
 	Margrafikus = 1;
 }
 
 static void ddfinish( void ) {
-	if( Tex ) {
+	if( Texek[0] )
 		vita2d_wait_rendering_done();
-		vita2d_free_texture( Tex );
-		Tex = NULL;
-	}
+	for( int i = 0; i < TEXSZAM; i++ )
+		if( Texek[i] ) {
+			vita2d_free_texture( Texek[i] );
+			Texek[i] = NULL;
+		}
 }
 
 // Draws the current front buffer (or only uploads it) and shows it:
@@ -151,9 +167,11 @@ static void kirajzolkeret( int dialoggal ) {
 
 static void megjelenit( void ) {
 	Piszkos = 0;
+	Palpiszkos = 0;
+	Texmost = (Texmost + 1) % TEXSZAM; // (port) the GPU is done with this one
 	if( !Tex || !Buff[Elso] )
 		return;
-	vita2d_wait_rendering_done(); // GPU must not read the texture while we write it
+	Port_kepforras = 0;
 	unsigned char* dest = (unsigned char*)vita2d_texture_get_datap( Tex );
 	unsigned int stride = vita2d_texture_get_stride( Tex );
 	unsigned char* sour = Buff[Elso];
@@ -234,9 +252,27 @@ ddpal::~ddpal( void ) {
 }
 
 void ddpal::set( void ) {
+	if( memcmp( Paletta, pddpal, sizeof( Paletta ) ) == 0 )
+		return; // (port) the same colours: nothing to show again
 	memcpy( Paletta, pddpal, sizeof( Paletta ) );
 	// Like DirectDraw, a palette change is visible at once (next mv_check):
-	Piszkos = 1;
+	Palpiszkos = 1;
+}
+
+// (port) Shows what is waiting to be shown (from mv_check):
+static void piszkoskezel( void ) {
+	if( Piszkos ) {
+		megjelenit(); // the CPU buffer changed
+		return;
+	}
+	if( !Palpiszkos )
+		return;
+	Palpiszkos = 0;
+	if( Port_kepforras == 0 )
+		megjelenit();
+	else if( Port_kepforras == 2 )
+		port_gm_ujra( 0 );
+	// a GPU gameplay frame: the next frame has the new colours
 }
 
 // ---------------------------------------------------------------------------
@@ -570,7 +606,7 @@ void di_reset_state( state_s* mut ) {
 	mut->billminusz = 0;
 	mut->billzoomin  = DIK_EQUALS;        // Pad 1 R
 	mut->billzoomout = DIK_MINUS;         // Pad 1 L
-	mut->billsnap = DIK_I;                // Triangle
+	mut->billsnap = 0;                    // (port) unassigned (was Triangle)
 }
 
 // Names shown in Options / Customize controls:
@@ -864,8 +900,8 @@ int getbutjmou( void ) {
 void mv_check( int nemkellnyomas ) {
 	// Not while queued (e.g. injected keyboard) characters are still being
 	// processed, so typed text appears at once instead of letter by letter:
-	if( Piszkos && !Bufflocked && Charszam == 0 )
-		megjelenit();
+	if( (Piszkos || Palpiszkos) && !Bufflocked && Charszam == 0 )
+		piszkoskezel();
 	hang();
 	olvasbemenet();
 	mozgategeret();
@@ -881,6 +917,7 @@ void dsoundfinish( void );
 
 void mv_exit( char* text ) {
 	text = text;
+	port_fajlmentes_var(); // (port) the settings being saved
 	dsoundfinish();
 	ddfinish();
 	if( Vitainit )
@@ -891,6 +928,145 @@ void mv_exit( char* text ) {
 }
 
 static double Startido = 0;
+
+// ---------------------------------------------------------------------------
+// (port) Saving files in the background. Writing a file on the memory card
+// can take a long time; the game only builds the content (in memory) and
+// this thread, on the third CPU core, writes it. A file whose content is the
+// same as the last time is not written at all.
+// ---------------------------------------------------------------------------
+
+#define MENTFAJLSZAM (4)
+struct mentfajl {
+	char nev[64];
+	unsigned char* utolso;  // the content last handed over (or read at start)
+	int utolsohossz;
+	unsigned char* fuggo;   // waiting to be written (owned by the thread)
+	int fuggohossz;
+};
+static mentfajl Mentfajlok[MENTFAJLSZAM];
+static int Mentfajlszam = 0;
+static SceKernelLwMutexWork Mentzar;
+static SceUID Mentsema = -1;
+static SceUID Mentszal = -1;
+static volatile int Mentiras = 0; // the thread is writing now
+
+static void fajliras( const char* nev, const unsigned char* adat, int hossz ) {
+	FILE* h = fopen( nev, "wb" );
+	if( !h )
+		return;
+	fwrite( adat, 1, hossz, h );
+	fclose( h );
+}
+
+static int mentszal( SceSize args, void* argp ) {
+	(void)args; (void)argp;
+	while( 1 ) {
+		sceKernelWaitSema( Mentsema, 1, NULL );
+		for( int i = 0; i < MENTFAJLSZAM; i++ ) {
+			sceKernelLockLwMutex( &Mentzar, 1, NULL );
+			mentfajl* f = &Mentfajlok[i];
+			unsigned char* adat = f->fuggo;
+			int hossz = f->fuggohossz;
+			f->fuggo = NULL;
+			if( adat )
+				Mentiras = 1;
+			sceKernelUnlockLwMutex( &Mentzar, 1 );
+			if( !adat )
+				continue;
+			fajliras( f->nev, adat, hossz );
+			free( adat );
+			Mentiras = 0;
+		}
+	}
+	return 0;
+}
+
+static void mentinit( void ) {
+	if( Mentszal >= 0 )
+		return;
+	if( sceKernelCreateLwMutex( &Mentzar, "elma_ment", 0, 0, NULL ) < 0 )
+		return;
+	Mentsema = sceKernelCreateSema( "elma_ment", 0, 0, 1000000, NULL );
+	if( Mentsema < 0 )
+		return;
+	Mentszal = sceKernelCreateThread( "elma_ment", mentszal, 0x10000100, 0x8000, 0,
+									  SCE_KERNEL_CPU_MASK_USER_2, NULL );
+	if( Mentszal >= 0 )
+		sceKernelStartThread( Mentszal, 0, NULL );
+}
+
+void port_fajlmentes( const char* nev, const void* adat, int hossz ) {
+	mentinit();
+	mentfajl* f = NULL;
+	for( int i = 0; i < Mentfajlszam; i++ )
+		if( strcmp( Mentfajlok[i].nev, nev ) == 0 )
+			f = &Mentfajlok[i];
+	if( !f ) {
+		if( Mentfajlszam >= MENTFAJLSZAM || strlen( nev ) >= sizeof( f->nev ) ) {
+			fajliras( nev, (const unsigned char*)adat, hossz );
+			return;
+		}
+		f = &Mentfajlok[Mentfajlszam];
+		memset( f, 0, sizeof( *f ) );
+		strcpy( f->nev, nev );
+		// What is on the memory card now:
+		FILE* h = fopen( nev, "rb" );
+		if( h ) {
+			fseek( h, 0, SEEK_END );
+			long n = ftell( h );
+			fseek( h, 0, SEEK_SET );
+			if( n > 0 && n < 4*1024*1024 ) {
+				f->utolso = (unsigned char*)malloc( n );
+				if( f->utolso && fread( f->utolso, 1, n, h ) == (size_t)n )
+					f->utolsohossz = (int)n;
+				else {
+					free( f->utolso );
+					f->utolso = NULL;
+				}
+			}
+			fclose( h );
+		}
+		Mentfajlszam++; // (only after the slot is filled: the thread reads it)
+	}
+	if( f->utolso && f->utolsohossz == hossz && memcmp( f->utolso, adat, hossz ) == 0 )
+		return; // nothing changed
+	unsigned char* masolat1 = (unsigned char*)malloc( hossz );
+	unsigned char* masolat2 = (unsigned char*)malloc( hossz );
+	if( !masolat1 || !masolat2 || Mentszal < 0 ) {
+		free( masolat1 );
+		free( masolat2 );
+		fajliras( nev, (const unsigned char*)adat, hossz );
+		return;
+	}
+	memcpy( masolat1, adat, hossz );
+	memcpy( masolat2, adat, hossz );
+	free( f->utolso );
+	f->utolso = masolat1;
+	f->utolsohossz = hossz;
+	sceKernelLockLwMutex( &Mentzar, 1, NULL );
+	free( f->fuggo ); // an older version not written yet: only the newest counts
+	f->fuggo = masolat2;
+	f->fuggohossz = hossz;
+	sceKernelUnlockLwMutex( &Mentzar, 1 );
+	sceKernelSignalSema( Mentsema, 1 );
+}
+
+void port_fajlmentes_var( void ) {
+	if( Mentszal < 0 )
+		return;
+	while( 1 ) {
+		sceKernelLockLwMutex( &Mentzar, 1, NULL );
+		int van = Mentiras;
+		for( int i = 0; i < Mentfajlszam; i++ )
+			if( Mentfajlok[i].fuggo )
+				van = 1;
+		sceKernelUnlockLwMutex( &Mentzar, 1 );
+		if( !van )
+			return;
+		sceKernelDelayThread( 2000 );
+	}
+}
 
 static double ezredmp( void ) {
 	return sceKernelGetProcessTimeWide()/1000.0;
@@ -1052,15 +1228,18 @@ void port_ime_bevitel( const char* cim, const char* kezdo, int maxhossz,
 	param.inputTextBuffer = eredmeny16;
 
 	Charszam = 0;
-	if( Piszkos && !Bufflocked )
-		megjelenit(); // the keyboard is drawn over the current screen
+	if( (Piszkos || Palpiszkos) && !Bufflocked )
+		piszkoskezel(); // the keyboard is drawn over the current screen
 	if( sceImeDialogInit( &param ) < 0 ) {
 		beirchar( MK_ESC );
 		return;
 	}
 	while( sceImeDialogGetStatus() != SCE_COMMON_DIALOG_STATUS_FINISHED ) {
 		hang();
-		kirajzolkeret( 1 );
+		if( Port_kepforras == 2 )
+			port_gm_ujra( 1 ); // (port) over the GPU menu
+		else
+			kirajzolkeret( 1 );
 	}
 	SceImeDialogResult eredmeny;
 	memset( &eredmeny, 0, sizeof( eredmeny ) );
@@ -1087,7 +1266,10 @@ void port_ime_bevitel( const char* cim, const char* kezdo, int maxhossz,
 	}
 	if( enterrel )
 		beirchar( MK_ENTER );
-	megjelenit();
+	if( Port_kepforras == 2 )
+		port_gm_ujra( 0 ); // (port)
+	else
+		megjelenit();
 }
 
 // ---------------------------------------------------------------------------
@@ -1249,6 +1431,7 @@ int main( int argc, char* argv[] ) {
 		Waitforretrace = 0;
 
 	ddinit();
+	port_gpu_init(); // (port) GPU drawing, unless cpurajz.inf is there
 
 	initmenukep2();
 

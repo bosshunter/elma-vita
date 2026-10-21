@@ -208,6 +208,13 @@ void dobozki( pic8* ppic8, kiskep* pkiskep, vekt2 u, vekt2 v, vekt2 r ) {
 		v.y *= Affinaranyy;
 	}
 
+	// (port) GPU drawing: the part is a textured parallelogram
+	if( Port_gjrajz ) {
+		port_gj_negyszog( pkiskep, (float)r.x, (float)r.y, (float)u.x, (float)u.y,
+						  (float)v.x, (float)v.y );
+		return;
+	}
+
 	// Megnezi, hogy nem tul vizszintes-e:
 	int vizszintes = 0;
 	int pozitivan = 0;

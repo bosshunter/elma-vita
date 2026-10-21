@@ -86,9 +86,11 @@ void loadlgrfile( char* nev ) {
 
 	strcpy( Bentlgrnev, nev );
 
+	port_gpu_szunet(); // (port) the GPU drawing thread must not use the old pictures
 	if( Plgr )
 		delete Plgr;
 	Plgr = new lgrfile( Bentlgrnev );
+	Port_lgrgen++; // (port)
 	return;
 }
 
@@ -461,6 +463,9 @@ lgrfile::lgrfile( char* lgrnev ) {
 	FILE* h = fopen( lgrtmp, "rb" );
 	if( !h )
 		uzenet( "Cannot find file:", lgrtmp );
+	// (port) A big read buffer: fewer, larger reads from the memory card
+	static char Lgrpuffer[64*1024];
+	setvbuf( h, Lgrpuffer, _IOFBF, sizeof( Lgrpuffer ) );
 
 	char tmp2[10];
 	if( fread( tmp2, 1, 5, h ) != 5 )

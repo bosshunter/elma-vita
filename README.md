@@ -90,6 +90,17 @@ version either; the registered version lets you edit them after a warning.
   properties…) keep their original layout and open in the middle of the
   screen. The touch screen and the cursor map 1:1.
 
+**GPU drawing (v1.1)**: gameplay, replays and the menus are drawn by the
+Vita's GPU instead of pixel by pixel on the CPU. The picture is the same as
+before (same 256 colours, no smoothing), but zooming out no longer slows the
+game down, and 3P/4P split screen runs at full speed. The level is cut into
+256x256 pieces that become textures the first time they are seen; a second
+CPU core prepares the pieces just outside each view before they scroll in.
+The level editor still draws on the CPU (it only redraws what changes), but
+its screen updates no longer wait for the GPU.
+To go back to the CPU drawing of v1.0 (for comparing, or if something looks
+wrong), put an empty file named `cpurajz.inf` in `ux0:data/elma`.
+
 ## Controls
 
 **Menus**
@@ -117,10 +128,14 @@ version either; the registered version lets you edit them after a warning.
 | D-Pad Up | Show / hide timer | V |
 | L | Zoom out | - |
 | R | Zoom in | = |
-| Triangle | Screenshot | I |
+| — | Screenshot | ??? (unassigned) |
 
 Esc is split on purpose: Circle in menus, Select in game, because Circle turns
 the bike around.
+
+*Make a Screenshot* is unassigned by default (it used to be Triangle); give it
+a button in Customize controls. With the GPU drawing the pictures are saved
+as `snapNN.bmp` (full colour), with the CPU drawing as `snapNN.pcx` as before.
 
 **External controllers (ds34vita)**
 
@@ -191,9 +206,9 @@ readable by the PC game). The first time this version starts, if L / R are
 still on the screen size (the old defaults), they are moved to zoom.
 The zoom stays the same from level to level and is saved in `state34.dat`,
 so it is still there the next time you start the game. **Start** during a
-level or replay sets it back to 1x. Zooming far out is slower,
-because the game draws on the CPU (at 0.3x a full screen view has about 11
-times as many pixels to draw).
+level or replay sets it back to 1x. With the GPU drawing, zooming out costs
+no speed (with the CPU drawing, `cpurajz.inf`, 0.3x is slower: a full screen
+view has about 11 times as many pixels to draw).
 
 **Saving**: settings, controls, players and progress are saved every time
 the main menu comes back and after every level, not only when quitting
@@ -202,8 +217,10 @@ through the menu, so closing the game with the PS button loses nothing.
 **Screen size in split screen (2P–4P)**: there are two extra steps above the
 original biggest size. *Inc. Screen Size* at full size makes the gap between
 the views thinner and then removes it; *Dec. Screen Size* brings the gap back
-and then shrinks the views as before. A game starts with the thin gap. (These
-two keys are unassigned by default; set them in Customize controls.)
+and then shrinks the views as before. The first time, a game starts with the
+thin gap; after that the screen size you chose is saved in `state34.dat` and
+comes back the next time you start the game. (These two keys are unassigned
+by default; set them in Customize controls.)
 
 | Step (Inc. → Dec.) | Views |
 |---|---|
@@ -262,6 +279,10 @@ name, apples and (in Flag Tag) flag time across the full width.
 - The left stick works as the D-pad.
 - Square erases a binding.
 - Added zoom in and out when playing a level. Start resets the zoom.
+- Gameplay and menus drawn by the GPU, with a second CPU core preparing the
+  level textures (v1.1). The screen size is saved, *Make a Screenshot* is
+  unassigned by default, and the first level after starting the game loads
+  as fast as the others (the default LGR is loaded during the intro).
 - The touch screen works as a tablet in the editor.
 - Locked levels can be opened in the editor after a warning (registered
   version only), and a normal Save writes them unlocked.
@@ -275,7 +296,7 @@ https://github.com/elastomania/elma-classic.
 | Path | Contents |
 |---|---|
 | `src/` | The original source with lowercase file names, forward-slash includes and the changes above |
-| `platform/` | New Vita platform layer. `vita_platform.cpp` covers video (vita2d, 8-bit palettized texture), input, mouse emulation, timer, sound output (sceAudioOut), the on-screen keyboard and `main()`. `vita_hhigh.cpp` is the original sound mixer, with four engine voices |
+| `platform/` | New Vita platform layer. `vita_platform.cpp` covers video (vita2d, 8-bit palettized texture), input, mouse emulation, timer, sound output (sceAudioOut), the on-screen keyboard and `main()`. `vita_gpu.cpp` is the GPU drawing of gameplay and menus (sceGxm through vita2d, level texture cache, helper thread). `vita_hhigh.cpp` is the original sound mixer, with four engine voices |
 | `compat/` | Small shims for Watcom/MSVC runtime functions and DOS-style paths |
 | `build_units.txt` | The files that make up the game (the Windows build without its DOS/Windows platform code and stale copies) |
 | `sce_sys/` | LiveArea images (icon, background, start gate) |

@@ -423,6 +423,11 @@ void ecset::mutatotlanit( void ) {
 	}
 	if( !nagydarabtomb )
 		hibanincsmem();
+	// (port) For the GPU pieces: where each row starts
+	delete[] sorkezdx;
+	sorkezdx = new int[sorszam > 0 ? sorszam : 1];
+	for( int i = 0; i < sorszam; i++ )
+		sorkezdx[i] = kurxposok_A[i];
 	int szammost = 0;
 	for( int i = 0; i < sorszam; i++ ) {
 		if( i == 1000 )
@@ -441,6 +446,7 @@ void ecset::mutatotlanit( void ) {
 			szammost++;
 		}
 	}
+	nagydarabvege = &nagydarabtomb[szammost]; // (port)
 }
 
 // Ptop kerek-jeinek egesz koordinatait kitolti:
@@ -1233,6 +1239,8 @@ ecset::ecset( int view_p ) {
 	tombbenkov = 0;
 
 	nagydarabtomb = NULL;
+	sorkezdx = NULL;      // (port)
+	nagydarabvege = NULL;
 
 	xsizedb = ysizedb = 0.0;
 	maxx = sorszam = 0;
@@ -1327,6 +1335,8 @@ ecset::ecset( ecset* pold ) {
 	tombbenkov = 0;
 
 	nagydarabtomb = NULL;
+	sorkezdx = NULL;      // (port)
+	nagydarabvege = NULL;
 
 	view = 0;
 	xsizedb = ysizedb = 0.0;
@@ -1369,6 +1379,115 @@ ecset::~ecset( void ) {
 		hiba( "ecset::~ecset !nagydarabtomb!" );
 	delete nagydarabtomb;
 	nagydarabtomb = NULL;
+	delete[] sorkezdx; // (port)
+	sorkezdx = NULL;
+}
+
+// (port) GPU pieces, see ecset.h
+void ecset::csempekurzor( darab** kurzor, int* kurzorx ) {
+	for( int i = 0; i < sorszam; i++ ) {
+		kurzor[i] = sorok[i];
+		kurzorx[i] = sorkezdx ? sorkezdx[i] : 0;
+	}
+}
+
+void ecset::csempe( unsigned char* dest, int stride, int x0, int y0, int w, int h,
+					unsigned char atlatszo, const unsigned char* atkodol,
+					darab** kurzor, int* kurzorx ) {
+	int fymod = Plgr->pfold->getysize();
+	int fxmod = Plgr->foldxmodulus;
+	for( int r = 0; r < h; r++ ) {
+		unsigned char* d = dest + r*stride;
+		int ye = y0 + r;
+		if( ye < 0 || ye >= sorszam || !sorok[ye] || !nagydarabtomb ) {
+			memset( d, atlatszo, w );
+			continue;
+		}
+		darab* eleje = sorok[ye];
+		darab* vege = (ye+1 < sorszam && sorok[ye+1]) ? sorok[ye+1] : nagydarabvege;
+		// The caller's cursor of this row, moved back or forward to x0:
+		darab* pda = kurzor[ye];
+		int xpos = kurzorx[ye];
+		if( !pda || pda < eleje || pda >= vege ) {
+			pda = eleje;
+			xpos = sorkezdx[ye];
+		}
+		while( pda > eleje && xpos > x0 ) {
+			pda--;
+			xpos -= pda->xsize;
+		}
+		while( pda+1 < vege && xpos + pda->xsize <= x0 ) {
+			xpos += pda->xsize;
+			pda++;
+		}
+		kurzor[ye] = pda;
+		kurzorx[ye] = xpos;
+
+		int x = x0;
+		int xvege = x0 + w;
+		// Before the first piece of the row:
+		if( x < xpos ) {
+			int n = xpos - x;
+			if( n > xvege - x )
+				n = xvege - x;
+			memset( d, atlatszo, n );
+			x += n;
+		}
+		unsigned char* foldsor = Plgr->pfold->getptr( ye % fymod );
+		while( x < xvege && pda < vege ) {
+			int dvege = xpos + pda->xsize;
+			if( dvege <= x ) {
+				xpos = dvege;
+				pda++;
+				continue;
+			}
+			int n = (dvege < xvege ? dvege : xvege) - x;
+			unsigned char* cel = d + (x - x0);
+			int p = (int)(intptr_t)pda->pixelek;
+			if( p & PIXELMASZK ) {
+				unsigned char* forras = pda->pixelek + (x - xpos);
+				if( atkodol )
+					for( int i = 0; i < n; i++ )
+						cel[i] = atkodol[forras[i]];
+				else
+					memcpy( cel, forras, n );
+			}
+			else if( p == PX_FOLD ) {
+				unsigned char* forras = foldsor + (x % fxmod);
+				if( atkodol )
+					for( int i = 0; i < n; i++ )
+						cel[i] = atkodol[forras[i]];
+				else
+					memcpy( cel, forras, n );
+			}
+			else
+				memset( cel, atlatszo, n ); // sky (drawn separately) or empty
+			x += n;
+			if( x >= dvege ) {
+				xpos = dvege;
+				pda++;
+			}
+		}
+		if( x < xvege )
+			memset( d + (x - x0), atlatszo, xvege - x );
+	}
+}
+
+void ecset::szinhasznalat( unsigned int* hasznalt ) {
+	if( !nagydarabtomb )
+		return;
+	for( int ye = 0; ye < sorszam; ye++ ) {
+		if( !sorok[ye] )
+			continue;
+		darab* vege = (ye+1 < sorszam && sorok[ye+1]) ? sorok[ye+1] : nagydarabvege;
+		for( darab* pda = sorok[ye]; pda < vege; pda++ ) {
+			if( !((int)(intptr_t)pda->pixelek & PIXELMASZK) )
+				continue;
+			unsigned char* p = pda->pixelek;
+			for( int i = 0; i < pda->xsize; i++ )
+				hasznalt[p[i]]++;
+		}
+	}
 }
 
 void ecset::deletemdarabok( void ) {
@@ -2124,7 +2243,102 @@ void ecset::foltoz( void ) {
 }
 
 
+// (port) GPU drawing: the colour that stands for "transparent" in the level
+// pieces, a colour no picture of the level uses. If every colour is used, the
+// least used one is taken and its pixels get the nearest other colour
+// (Port_atkodol). Port_szintgen changes with every new level picture.
+int Port_atlatszo = 0;
+int Port_atkodolkell = 0;
+unsigned char Port_atkodol[256];
+int Port_szintgen = 0;
+
+// The cursors of the two threads (0: main, 1: helper) in both layers:
+static darab** Kurzor[2][2] = { { NULL, NULL }, { NULL, NULL } };
+static int* Kurzorx[2][2] = { { NULL, NULL }, { NULL, NULL } };
+static int Kurzorsorok = 0;
+
+static void csempefv( int reteg, unsigned char* dest, int stride,
+					  int x0, int y0, int w, int h, int kurzorszam ) {
+	ecset* e = reteg ? Pecsetfelso : Pecsetalso;
+	kurzorszam &= 1;
+	reteg &= 1;
+	if( !e || !Kurzor[kurzorszam][reteg] || e->getsorszam() > Kurzorsorok ) {
+		for( int r = 0; r < h; r++ )
+			memset( dest + r*stride, Port_atlatszo, w );
+		return;
+	}
+	e->csempe( dest, stride, x0, y0, w, h, (unsigned char)Port_atlatszo,
+			   Port_atkodolkell ? Port_atkodol : NULL,
+			   Kurzor[kurzorszam][reteg], Kurzorx[kurzorszam][reteg] );
+}
+
+static void kurzorok( void ) {
+	int n = Pecsetalso->getsorszam();
+	if( Pecsetfelso->getsorszam() > n )
+		n = Pecsetfelso->getsorszam();
+	if( n > Kurzorsorok ) {
+		for( int k = 0; k < 2; k++ )
+			for( int r = 0; r < 2; r++ ) {
+				delete[] Kurzor[k][r];
+				delete[] Kurzorx[k][r];
+				Kurzor[k][r] = new darab*[n];
+				Kurzorx[k][r] = new int[n];
+				if( !Kurzor[k][r] || !Kurzorx[k][r] )
+					hiba( "memory kurzorok!" );
+			}
+		Kurzorsorok = n;
+	}
+	for( int k = 0; k < 2; k++ ) {
+		Pecsetalso->csempekurzor( Kurzor[k][0], Kurzorx[k][0] );
+		Pecsetfelso->csempekurzor( Kurzor[k][1], Kurzorx[k][1] );
+	}
+	Port_csempefv = csempefv;
+}
+
+static void atlatszovalasztas( void ) {
+	kurzorok();
+	static unsigned int Hasznalt[256];
+	memset( Hasznalt, 0, sizeof( Hasznalt ) );
+	Pecsetalso->szinhasznalat( Hasznalt );
+	Pecsetfelso->szinhasznalat( Hasznalt );
+	// The ground picture:
+	pic8* pf = Plgr->pfold;
+	for( int y = 0; y < pf->getysize(); y++ ) {
+		unsigned char* sor = pf->getptr( y );
+		for( int x = 0; x < Plgr->foldxmodulus && x < pf->getxsize(); x++ )
+			Hasznalt[sor[x]]++;
+	}
+	int legkevesebb = 0;
+	for( int c = 0; c < 256; c++ )
+		if( Hasznalt[c] < Hasznalt[legkevesebb] )
+			legkevesebb = c;
+	Port_atlatszo = legkevesebb;
+	for( int c = 0; c < 256; c++ )
+		Port_atkodol[c] = (unsigned char)c;
+	Port_atkodolkell = Hasznalt[legkevesebb] != 0;
+	if( Port_atkodolkell ) {
+		// The nearest other colour of the palette:
+		unsigned char* p = Plgr->paltomb;
+		int r = p[3*legkevesebb], g = p[3*legkevesebb+1], b = p[3*legkevesebb+2];
+		int legjobb = legkevesebb == 0 ? 1 : 0;
+		int legjobbtav = 1 << 30;
+		for( int c = 0; c < 256; c++ ) {
+			if( c == legkevesebb )
+				continue;
+			int dr = p[3*c]-r, dg = p[3*c+1]-g, db = p[3*c+2]-b;
+			int tav = dr*dr + dg*dg + db*db;
+			if( tav < legjobbtav ) {
+				legjobbtav = tav;
+				legjobb = c;
+			}
+		}
+		Port_atkodol[legkevesebb] = (unsigned char)legjobb;
+	}
+	Port_szintgen++;
+}
+
 void betoltecseteket( void ) {
+	port_gpu_szunet(); // (port) the GPU drawing thread must not read the old level now
 	Plgr->betolthattereket();
 
 	Osszegszam = 0; // Ide osszegezzuk osszes lefoglalt szakaszt
@@ -2193,6 +2407,9 @@ void betoltecseteket( void ) {
 	// Kajak egesz koordjainak kitoltese:
 	Pecsetalso->kitoltfoodkoordokat();
 	Pecsetview->kitoltfoodkoordokat(); // View koordok
+
+	if( port_gpu() )
+		atlatszovalasztas(); // (port)
 }
 
 

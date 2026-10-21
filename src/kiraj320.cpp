@@ -5,13 +5,15 @@
 int Kitoltestmegrak = 0;
 int Kitoltestmegrakkezd = 10;
 
-static double Kepmeret = 1.0;
+// (port) The screen size (Inc. / Dec. Screen Size) and the split screen gap
+// are kept in State, so they are saved in state34.dat and come back at start:
+#define Kepmeret (State->kepmeret)
 
 // (port) Gap between the split screen views. Above the biggest view size,
 // two more steps: 2 = the original gap, 1 = a thin gap (default), 0 = none.
 // R (bigger) at full size makes the gap thinner, L (smaller) wider, and only
 // then do the views shrink. With one player there is no gap to change.
-static int Reszint = 1;
+#define Reszint (State->reszint)
 
 static int resz( int eredeti ) {
 	if( Reszint >= 2 )
@@ -297,6 +299,50 @@ static void felhokfel( int x, int y, pic8* ppicbuffer, pic8* pfelho,
     }
 } */
 
+// (port) GPU drawing (vita_gpu.cpp): set for every frame by kirajzol320n.
+// The level, the objects, the bikes and the timer are then sent to the GPU;
+// the navigator is drawn into a work picture (Gpunav) and sent as a picture.
+static int Gpujatek = 0;
+static pic8* Gpunav = NULL;
+static int Gx1 = 0, Gy1 = 0; // the bottom left corner of the current view in the screen buffer
+
+// The current view (in screen buffer coordinates, y up) to the GPU:
+static void gpunezet( int x, int y, int w, int h, int vw, int vh ) {
+	int ox = 0, oy = 0;
+	if( Port_kepx != PORT_FIZX ) {
+		ox = PORT_KLASSZ_OFSX;
+		oy = PORT_KLASSZ_OFSY;
+	}
+	port_gj_nezet( ox + x, oy + Port_kepy - y - h, w, h, vw, vh );
+}
+
+// Starts a GPU frame; returns the picture the views are cut out of:
+static pic8* gpukezd( void ) {
+	extern int Port_atlatszo, Port_szintgen; // ecset.cpp
+	port_kepmeretfrissit();
+	// The level's colours: the first frame of a level is drawn before the
+	// game switches the screen to them (Plgr->pal->set() after it)
+	port_gj_kezd( Plgr->pal->pddpal, Port_atlatszo, Port_szintgen );
+	int ox = 0, oy = 0;
+	if( Port_kepx != PORT_FIZX ) {
+		ox = PORT_KLASSZ_OFSX;
+		oy = PORT_KLASSZ_OFSY;
+	}
+	// The gaps between the views (the CPU drawing only fills them now and
+	// then, the GPU draws every frame from scratch):
+	port_gj_hatter( Plgr->pkimarad, ox, oy, Port_kepx, Port_kepy );
+	if( !Gpunav )
+		Gpunav = new pic8( PORT_FIZX, PORT_FIZY );
+	return Gpunav;
+}
+
+// Ends the GPU frame (with a screenshot if one was asked for):
+static void gpuvege( void ) {
+	int ment = Legkozment;
+	Legkozment = 0;
+	port_gj_vege( ment );
+}
+
 // (port) ji: player index 0..3. All other players are shown as dots.
 static void kiview( int ji, pic8* ppic, double baljobb,
 				vekt2 motorkozep ) {
@@ -375,6 +421,8 @@ static void kiview( int ji, pic8* ppic, double baljobb,
 	BYTESET( sor, Plgr->keretindex, Viewxsize );
 	sor = ppic->getptr( vy2 ) + vx1 +1;
 	BYTESET( sor, Plgr->keretindex, Viewxsize );
+	if( Gpujatek ) // (port) drawn into a work picture, now onto the screen
+		port_gj_resz( ppic, vx1, vy1, vx2-vx1+1, vy2-vy1+1 );
 }
 
 // Mentes lemezre:
@@ -721,7 +769,7 @@ static void kirakegyjatekost(
 	double eHatarx2 = Hatarx2, eHatary2 = Hatary2;
 	double eMo_bal = Mo_bal, eMo_dx = Mo_dx, eMo_y = Mo_y;
 	if( zoomol ) {
-		if( !Zoomkep ) {
+		if( !Zoomkep && !Gpujatek ) { // (port) the GPU scales it itself
 			Zoomkep = new pic8( PORT_ZOOMSZEL, PORT_ZOOMMAG );
 			Zoomnezet = new pic8( 10, PORT_ZOOMMAG ); // only the row table is used
 		}
@@ -738,8 +786,10 @@ static void kirakegyjatekost(
 		Mo_y = Cysize/Arany/2.0;
 		Hatarx2 = Cxsize-3.0;
 		Hatary2 = Cysize-3.0;
-		Zoomnezet->keszitbelsot( 0, 0, vw-1, vh-1, Zoomkep );
-		ppic = Zoomnezet;
+		if( !Gpujatek ) {
+			Zoomnezet->keszitbelsot( 0, 0, vw-1, vh-1, Zoomkep );
+			ppic = Zoomnezet;
+		}
 	}
 
 	// Kiszamoljuk kepernyo bal also sarkat:
@@ -749,7 +799,18 @@ static void kirakegyjatekost(
 				 motorkozep.y-Mo_y );
 
 	//ppic->fillbox( 100 );
-	Pecsetalso->kitesz( ji, ppic, sarok, 0, 0, Cxsize-1, Cysize-1 );
+	if( Gpujatek ) {
+		// (port) the view (zoomed: a bigger picture in the same rectangle),
+		// the sky, then the level behind the bikes:
+		gpunezet( Gx1, Gy1, eCxsize, eCysize, Cxsize, Cysize );
+		int xe1 = 0, ye1 = 0;
+		Pecsetalso->getbalalso_int( sarok, &xe1, &ye1 );
+		port_gj_eg( Plgr->peg, Plgr->egxmodulus, Plgr->peg->getysize(),
+					(xe1/2) % Plgr->egxmodulus );
+		port_gj_reteg( 0, xe1, ye1 );
+	}
+	else
+		Pecsetalso->kitesz( ji, ppic, sarok, 0, 0, Cxsize-1, Cysize-1 );
 	int sordarabszam = Kisordarabszam;
 
 	hang( /*"Ecsetalso utan"*/ );
@@ -816,7 +877,10 @@ static void kirakegyjatekost(
 			}
 		}
 
-		blt8( ppic, pobjpic, pker->rxint-balalsox,
+		if( Gpujatek )
+			port_gj_kep( pobjpic, pker->rxint-balalsox, pker->ryint-balalsoy + dy );
+		else
+			blt8( ppic, pobjpic, pker->rxint-balalsox,
 									   pker->ryint-balalsoy + dy );
 	}
 
@@ -846,8 +910,15 @@ static void kirakegyjatekost(
 	kibike( ji, ppic, t, sarok, pmot, pvalt, motorkepe( ji ) );
 
 	// Felso ecset kitevese:
-	Pecsetfelso->kitesz( ji, ppic, sarok, 0, 0, Cxsize-1, Cysize-1 );
-	sordarabszam += Kisordarabszam;
+	if( Gpujatek ) {
+		int xe1 = 0, ye1 = 0;
+		Pecsetfelso->getbalalso_int( sarok, &xe1, &ye1 );
+		port_gj_reteg( 1, xe1, ye1 );
+	}
+	else {
+		Pecsetfelso->kitesz( ji, ppic, sarok, 0, 0, Cxsize-1, Cysize-1 );
+		sordarabszam += Kisordarabszam;
+	}
 
 	if( zoomol ) {
 		// (port) scale the zoomed picture into the view and restore the sizes
@@ -860,7 +931,10 @@ static void kirakegyjatekost(
 		Mo_dx = eMo_dx;
 		Mo_y = eMo_y;
 		ppic = celpic;
-		zoomskalaz( ppic, Cxsize, Cysize, vw, vh );
+		if( Gpujatek )
+			port_gj_skala( Cxsize, Cysize ); // the navigator and the timer at their normal size
+		else
+			zoomskalaz( ppic, Cxsize, Cysize, vw, vh );
 	}
 
 	if( viewki )
@@ -892,9 +966,18 @@ static void kirakegyjatekost(
 			else
 				kidigit( Ezenlegjobbido, -1.0, t, ppic, Cxsize, Cysize );
 	}
+	if( Gpujatek )
+		port_gj_nezet_vege();
 }
 
 static pic8* Bpic = NULL;
+
+// (port) Bpic->keszitbelsot, also remembering where the view is (GPU):
+static void bpicbeallit( int x1, int y1, int x2, int y2, pic8* npic ) {
+	Bpic->keszitbelsot( x1, y1, x2, y2, npic );
+	Gx1 = x1;
+	Gy1 = y1;
+}
 
 extern int Ucsosurlodas;
 
@@ -912,16 +995,22 @@ void kirajzol320(
 
 // (port) 3 or 4 views:
 static void kirajzol34( double t, int n, valtozok** pv, int* viewki, int* timeki ) {
-	Locky0_alul = 1;
-	pic8* npic = lockbackbuffer_pic( 0 );
-	Locky0_alul = 0;
+	pic8* npic = NULL;
+	if( Gpujatek )
+		npic = gpukezd();
+	else {
+		Locky0_alul = 1;
+		npic = lockbackbuffer_pic( 0 );
+		Locky0_alul = 0;
+	}
 
 	if( !Bpic )
 		Bpic = new pic8( 10, PORT_FIZY );
 
 	if( Kitoltestmegrak > 0 ) {
 		Kitoltestmegrak--;
-		kitolthatteret( npic ); // background in the gaps between the views
+		if( !Gpujatek )
+			kitolthatteret( npic ); // background in the gaps between the views
 	}
 
 	// Slots in buffer coordinates. The picture is upside down (Locky0_alul),
@@ -970,8 +1059,14 @@ static void kirajzol34( double t, int n, valtozok** pv, int* viewki, int* timeki
 	for( int i = 0; i < k; i++ ) {
 		int j = lat[i];
 		nezetbeallit( sx[i], sy[i], sw[i], sh[i] );
-		Bpic->keszitbelsot( Cx1, Cy1, Cx2, Cy2, npic );
+		bpicbeallit( Cx1, Cy1, Cx2, Cy2, npic );
 		kirakegyjatekost( j, Bpic, t, Pmotok[j], pv[j], viewki[j], timeki[j] );
+	}
+
+	if( Gpujatek ) {
+		gpuvege();
+		hang();
+		return;
 	}
 
 	// Mentes lemezre:
@@ -986,6 +1081,7 @@ static void kirajzol34( double t, int n, valtozok** pv, int* viewki, int* timeki
 
 void kirajzol320n( double t, int n, valtozok** pv, int* viewki, int* timeki ) {
 	Aktvaltok = pv;
+	Gpujatek = port_gpu(); // (port)
 	if( n >= 3 ) {
 		kirajzol34( t, n, pv, viewki, timeki );
 		return;
@@ -1014,9 +1110,14 @@ void kirajzol320n( double t, int n, valtozok** pv, int* viewki, int* timeki ) {
 		}
 	}
 
-	Locky0_alul = 1;
-    pic8* npic = lockbackbuffer_pic( 0 );
-    Locky0_alul = 0;
+	pic8* npic = NULL;
+	if( Gpujatek )
+		npic = gpukezd(); // (port)
+	else {
+		Locky0_alul = 1;
+		npic = lockbackbuffer_pic( 0 );
+		Locky0_alul = 0;
+	}
 
     if( !Bpic )
         Bpic = new pic8( 10, PORT_FIZY ); // (port) row capacity for the tallest screen
@@ -1030,14 +1131,15 @@ void kirajzol320n( double t, int n, valtozok** pv, int* viewki, int* timeki ) {
 
 		// hiba( "Itt van 13!" ); idejott
 
-        kitolthatteret( npic );
+        if( !Gpujatek )
+            kitolthatteret( npic );
     }
 
 	// hiba( "Itt van 12!" ); ide nemjon
 
 	if( splitscreen ) {
 		// 1. Jatekos:
-		Bpic->keszitbelsot( Cx1, Cy1, Cx2, Cy2, npic );
+		bpicbeallit( Cx1, Cy1, Cx2, Cy2, npic );
 
 		kirakegyjatekost(
 			0,
@@ -1046,7 +1148,7 @@ void kirajzol320n( double t, int n, valtozok** pv, int* viewki, int* timeki ) {
 			viewki1, timeki1 );
 
 		// 2. Jatekos:
-		Bpic->keszitbelsot( Cx1, Cy1Bplayer, Cx2, Cy2Bplayer, npic );
+		bpicbeallit( Cx1, Cy1Bplayer, Cx2, Cy2Bplayer, npic );
 
 		kirakegyjatekost(
 			1,
@@ -1055,7 +1157,7 @@ void kirajzol320n( double t, int n, valtozok** pv, int* viewki, int* timeki ) {
 			viewki2, timeki2 );
 	}
 	else {
-		Bpic->keszitbelsot( Cx1, Cy1, Cx2, Cy2, npic );
+		bpicbeallit( Cx1, Cy1, Cx2, Cy2, npic );
 		if( fulljatekosA ) {
 			kirakegyjatekost(
 					0,
@@ -1071,6 +1173,12 @@ void kirajzol320n( double t, int n, valtozok** pv, int* viewki, int* timeki ) {
                     viewki2, timeki2 );
         }
     }
+
+	if( Gpujatek ) { // (port)
+		gpuvege();
+		hang();
+		return;
+	}
 
     // Mentes lemezre:
     menteshakell( npic );

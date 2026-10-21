@@ -30,7 +30,30 @@ static void titkosread( void* mut, int hossz, FILE* h, char* nev ) {
 	}
 }
 
-static void titkoswrite( void* mut, int hossz, FILE* h ) {
+// (port) A file being built in memory (state.dat, state34.dat):
+struct mentpuffer {
+	unsigned char* p;
+	int n, kap;
+	mentpuffer( void ) { p = NULL; n = kap = 0; }
+	~mentpuffer( void ) { free( p ); }
+};
+
+static void pirs( mentpuffer* m, const void* adat, int hossz ) {
+	if( m->n + hossz > m->kap ) {
+		int uj = m->kap ? m->kap*2 : 64*1024;
+		while( uj < m->n + hossz )
+			uj *= 2;
+		unsigned char* p = (unsigned char*)realloc( m->p, uj );
+		if( !p )
+			hiba( "memory pirs!" );
+		m->p = p;
+		m->kap = uj;
+	}
+	memcpy( m->p + m->n, adat, hossz );
+	m->n += hossz;
+}
+
+static void titkoswrite( void* mut, int hossz, mentpuffer* h ) {
 	int i;
 	unsigned char* pc = (unsigned char*)mut;
 	short a = 23, b = 9782, c = 3391;
@@ -41,8 +64,7 @@ static void titkoswrite( void* mut, int hossz, FILE* h ) {
 		b += a*c;
 		a = 31*b+c;
 	}
-	if( fwrite( mut, 1, hossz, h ) != hossz )
-		hiba( "Nem ment iras state file-ba!" );
+	pirs( h, mut, hossz );
 	a = 23; b = 9782; c = 3391;
 
 	for( i = 0; i < hossz; i++ ) {
@@ -89,6 +111,8 @@ state_s::state_s( char* nev ) {
 	kulso34szam = 0;
 	kulso34hely = 0;
 	zoom = 1.0;
+	kepmeret = 1.0;
+	reszint = 1;
 
 	resetcontrols();
 
@@ -200,10 +224,10 @@ state_s::~state_s( void ) {
 }
 
 void state_s::save( void ) {
-	// Itt hagyni kell fopen-t!!!!!!!!!!!!!!!!!!!!:
-	FILE* h = fopen( Statenev, "wb" );
-	if( !h )
-		uzenet( "Could not open for write file!: ", Statenev );
+	// (port) The file is built in memory and written by a background thread
+	// (only when it changed), so the menus don't stop while it is written:
+	mentpuffer puffer;
+	mentpuffer* h = &puffer;
 
 	int verzio = 200;
 	titkoswrite( &verzio, 4, h );
@@ -236,11 +260,8 @@ void state_s::save( void ) {
 	long checknumber = Checknumber_state_r;
 	if( Sarvari )
 		checknumber = Checknumber_state_s;
-	if( fwrite( &checknumber, 1, sizeof( long ), h ) !=
-					sizeof( long ) )
-		hiba( "Nem megy beolvasas state file-ba!: ", Statenev );
-
-	fclose( h );
+	pirs( h, &checknumber, sizeof( long ) );
+	port_fajlmentes( Statenev, puffer.p, puffer.n );
 
 	save34(); // (port)
 }
@@ -256,10 +277,12 @@ void state_s::save( void ) {
 //   int billzoomin, int billzoomout
 // Version 4 adds the current zoom:
 //   double zoom
+// Version 5 adds the screen size and the split screen gap:
+//   double kepmeret, int reszint
 // ---------------------------------------------------------------------------
 
 static char State34nev[] = "state34.dat";
-static const int State34verzio = 4;
+static const int State34verzio = 5;
 
 palya34idok* state_s::idok34( int level, int n ) {
 	if( level < 0 || level >= MAXPALYASZAM )
@@ -416,11 +439,26 @@ void state_s::load34( void ) {
 				if( verzio >= 4 && fread( &z, 1, sizeof( z ), h ) == sizeof( z ) &&
 					z >= PORT_ZOOMMIN && z <= PORT_ZOOMMAX )
 					zoom = z;
+				double km = 1.0;
+				int rsz = 1;
+				if( verzio >= 5 && fread( &km, 1, sizeof( km ), h ) == sizeof( km ) &&
+					fread( &rsz, 1, 4, h ) == 4 ) {
+					if( km >= 0.69 && km <= 1.0 )
+						kepmeret = km;
+					if( rsz >= 0 && rsz <= 2 )
+						reszint = rsz;
+				}
+				if( verzio < 5 && billsnap == DIK_I )
+					billsnap = 0; // v5: Make a Screenshot is unassigned by default
 			}
 		}
 		fclose( h );
 	}
 	if( !zoomvan ) {
+		// (port) Make a Screenshot is unassigned by default since v1.1 (it was
+		// I / Triangle, also the PC game's default):
+		if( billsnap == DIK_I )
+			billsnap = 0;
 		// First start with zoom: L / R used to change the screen size (the
 		// old defaults, also the PC game's - and = keys). They zoom now, and
 		// the screen size keys become unassigned, as for a new player:
@@ -437,31 +475,33 @@ void state_s::load34( void ) {
 }
 
 void state_s::save34( void ) {
-	FILE* h = fopen( State34nev, "wb" );
-	if( !h )
-		return; // not fatal: only 3/4 player settings would be lost
+	mentpuffer puffer; // (port) written in the background, see save()
+	mentpuffer* h = &puffer;
 	int verzio = State34verzio;
-	fwrite( "EM34", 1, 4, h );
-	fwrite( &verzio, 1, 4, h );
-	fwrite( &jatekosszam, 1, 4, h );
-	fwrite( jatekosc, 1, sizeof( jatekosc ), h );
-	fwrite( jatekosd, 1, sizeof( jatekosd ), h );
-	fwrite( &opciok3, 1, sizeof( opciok3 ), h );
-	fwrite( &opciok4, 1, sizeof( opciok4 ), h );
+	pirs( h, "EM34", 4 );
+	pirs( h, &verzio, 4 );
+	pirs( h, &jatekosszam, 4 );
+	pirs( h, jatekosc, sizeof( jatekosc ) );
+	pirs( h, jatekosd, sizeof( jatekosd ) );
+	pirs( h, &opciok3, sizeof( opciok3 ) );
+	pirs( h, &opciok4, sizeof( opciok4 ) );
 	// Version 2: best times
 	int palyak = MAXPALYASZAM;
-	fwrite( &palyak, 1, 4, h );
-	fwrite( palyak3, 1, sizeof( palyak3 ), h );
-	fwrite( palyak4, 1, sizeof( palyak4 ), h );
-	fwrite( &kulso34szam, 1, 4, h );
+	pirs( h, &palyak, 4 );
+	pirs( h, palyak3, sizeof( palyak3 ) );
+	pirs( h, palyak4, sizeof( palyak4 ) );
+	pirs( h, &kulso34szam, 4 );
 	if( kulso34szam )
-		fwrite( kulso34, sizeof( kulso34idok ), kulso34szam, h );
+		pirs( h, kulso34, sizeof( kulso34idok )*kulso34szam );
 	// Version 3: zoom keys
-	fwrite( &billzoomin, 1, 4, h );
-	fwrite( &billzoomout, 1, 4, h );
+	pirs( h, &billzoomin, 4 );
+	pirs( h, &billzoomout, 4 );
 	// Version 4: current zoom
-	fwrite( &zoom, 1, sizeof( zoom ), h );
-	fclose( h );
+	pirs( h, &zoom, sizeof( zoom ) );
+	// Version 5: screen size and split screen gap
+	pirs( h, &kepmeret, sizeof( kepmeret ) );
+	pirs( h, &reszint, 4 );
+	port_fajlmentes( State34nev, puffer.p, puffer.n );
 }
 
 static void exportegylevel( FILE* h, palyaegyfeleidok* pidok, int single ) {

@@ -120,6 +120,27 @@ public:
 	void kiteszview_ab( int ajatekos, pic8* ppic, vekt2 balalso, int x1, int y1, int x2, int y2 );
 
 	//void egetkeszit( void );
+
+	// (port) GPU drawing: the level as square pieces ("csempe") for textures.
+	// A rectangle of the level picture, written to dest (stride bytes per
+	// row). Row 0 of dest is ecset row y0 (rows go up, like the game's
+	// screen buffer). Sky, empty and outside pixels get 'atlatszo'; ground is
+	// the LGR ground picture; atkodol (if not NULL) changes the colours of
+	// the pictures. kurzor/kurzorx: the caller's own row cursors (sorszam
+	// entries each, set up by csempekurzor), so two threads can do this at
+	// the same time:
+	void csempe( unsigned char* dest, int stride, int x0, int y0, int w, int h,
+				 unsigned char atlatszo, const unsigned char* atkodol,
+				 darab** kurzor, int* kurzorx );
+	void csempekurzor( darab** kurzor, int* kurzorx ); // sets cursors to the row starts
+	int getsorszam( void ) { return sorszam; }
+	int getmaxx( void ) { return maxx; }
+	// Adds 1 to hasznalt[c] for every picture pixel of colour c:
+	void szinhasznalat( unsigned int* hasznalt );
+private:
+	int*  sorkezdx;      // (port) x of each row's first piece
+	darab* nagydarabvege; // (port) end of nagydarabtomb
+public:
 };
 
 extern ecset* Pecsetalso;

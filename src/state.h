@@ -88,6 +88,8 @@ public:
 	jatekosnev_type jatekosc, jatekosd;  // profiles of players C and D
 	int billzoomin, billzoomout;         // zoom while playing (state34.dat v3)
 	double zoom;                         // current zoom, 1.0 = original (v4)
+	double kepmeret;                     // screen size (Inc. / Dec. Screen Size), 1.0 = full (v5)
+	int reszint;                         // split screen gap: 0 none, 1 thin, 2 original (v5)
 	jatekosopciok opciok3;               // controls of players C and D
 	jatekosopciok opciok4;
 	palya34idok palyak3[MAXPALYASZAM];   // internal levels, 3 players
